@@ -1,0 +1,370 @@
+---
+title: "Project dataset"
+output: html_document
+date: "2023-12-02"
+---
+## Packages
+
+```{r}
+
+library(tidymodels)
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(glmnet)
+library(e1071)
+
+```
+
+## Data Cleaning and Merging
+```{r}
+# Read the datasets
+player_awards <- read.csv("Player Award Shares.csv")
+advanced_stats <- read.csv("Advanced.csv")
+
+# Check the unique values in the key columns
+print(unique(advanced_stats$player))
+print(unique(player_awards$player))
+print(unique(advanced_stats$season))
+print(unique(player_awards$season))
+
+# Merge the datasets
+combined_data <- merge(advanced_stats, player_awards, by = c("season", "player"))
+
+
+# Rename 'tm.x' to 'team' in combined_data
+combined_data <- combined_data %>%
+  rename(team = tm.x)
+
+team_abbrev <- read.csv("Team Abbrev.csv")
+team_abbrev <- team_abbrev %>%
+  rename(team_name = team, team = abbreviation)
+
+# Merge combined_data with team_abbrev
+combined_data <- merge(combined_data, team_abbrev, by = c("season", "team"))
+combined_data <- combined_data %>%
+  select(-c(age.y, tm.y, seas_id.y, player_id.y, lg.y))
+colnames(combined_data) <- tolower(colnames(combined_data))
+
+# Inspect the first few rows of the merged data
+head(combined_data)
+
+combined_data$dpoy_winner <- with(combined_data, as.factor(award == "dpoy" & winner == TRUE))
+
+combined_data <- combined_data %>%
+  filter(!is.na(season) & !is.na(award) & !is.na(winner) & 
+         !is.na(dws) & !is.na(blk_percent) & !is.na(stl_percent) & 
+         !is.na(trb_percent) & !is.na(dbpm) & !is.na(playoffs))
+
+combined_data <- combined_data %>%
+  select(-birth_year)
+
+# Check the updated dataset
+combined_data <- combined_data %>% filter(award == "dpoy")
+head(combined_data)
+
+
+seasons_2015to2022 <- combined_data %>%
+  filter(season <= 2022)
+seasons_2023 <- combined_data %>%
+  filter(season == 2023)
+
+seasons_2015to2022 %>% arrange(desc(dpoy_winner))
+
+set.seed(445)
+colnames(seasons_2015to2022)
+#Train data
+seasons_2015to2022_x<- data.frame(seasons_2015to2022 %>% select(-dpoy_winner) , stringsAsFactors = FALSE)
+
+seasons_2015to2022_y<- data.matrix(data.frame(seasons_2015to2022 %>% select(dpoy_winner) , stringsAsFactors = FALSE))
+
+#Test data
+seasons_2023_x<- data.frame(seasons_2023 %>% select(-dpoy_winner) , stringsAsFactors = FALSE)
+
+seasons_2023_y<- data.matrix(data.frame(seasons_2023 %>% select(dpoy_winner) , stringsAsFactors = FALSE))
+```
+
+
+
+
+Logistic Regression Prediction Model for DPOY 
+```{r}
+
+#head(seasons_2015to2022_x)
+#colnames(seasons_2015to2022_x)
+
+#Build the model 
+glmDpoy <- glm(winner ~ mp + per + ts_percent + f_tr + drb_percent + stl_percent + blk_percent + dws + dbpm + playoffs, data = seasons_2015to2022_x, family = "binomial")
+#glmDpoy <- glm(winner ~ ., data = seasons_2015to2022_x)
+
+#predict
+glmDpoyPred <- predict(glmDpoy, seasons_2015to2022_x, type = 'response')
+
+head(glmDpoyPred, 25)
+max(glmDpoyPred)
+
+#convert 1's and 0's back to true's and false's
+seasons_2015to2022_x$dpoyPred <- ifelse(glmDpoyPred >= .37725, "TRUE", "FALSE")
+#head(seasons_2015to2022_x$dpoyPred)
+
+#validate
+accuracy <- mean(seasons_2015to2022_x$dpoyPred == seasons_2015to2022_x$winner)
+accuracy
+
+# Assuming glmDpoyPred and seasons_2015to2022_x$dpoyPred are already computed as per your provided code
+
+# Create the confusion matrix
+confMatrix <- table(Predicted = seasons_2015to2022_x$dpoyPred, Actual = seasons_2015to2022_x$winner)
+
+# Print the confusion matrix
+print(confMatrix)
+
+# Calculate accuracy (optional, as you already have it)
+accuracyCalc <- sum(diag(confMatrix)) / sum(confMatrix)
+print(accuracyCalc)
+
+
+head(seasons_2015to2022_x, 50)
+summary(glmDpoy)
+
+```
+
+SVM Predictive Model for DPOY
+```{r}
+
+svmDpoy <- svm(formula = winner ~ mp + per + ts_percent + f_tr + drb_percent + stl_percent + blk_percent + dws + dbpm + playoffs, data = seasons_2015to2022_x, type = 'C-classification', kernel = 'radial', gamma = 1)
+
+predDpoySVM <- predict(svmDpoy, seasons_2015to2022_x)
+head(predDpoySVM)
+
+cm <- table(predDpoySVM, seasons_2015to2022_x$winner)
+cm
+
+tp <- cm[4]
+fp <- cm[3]
+tn <- cm[1]
+fn <- cm[2]
+
+accuracy2 <- sum((tp + tn)/(tp + tn + fp + fn))
+accuracy2
+precision <- sum(tp/(tp + fp))
+precision
+recall <- sum(tp/(tp + fn)) 
+recall
+f1 <- sum(2*(precision*recall)/(precision + recall))
+f1
+
+# Assuming predDpoySVM (predicted values by SVM) and actual outcomes (seasons_2015to2022_x$winner) are already computed
+
+# Combine the SVM predicted values and actual outcomes into a new data frame
+comparison_df_svm <- data.frame(
+  ActualOutcomes = seasons_2015to2022_x$winner,
+  PredictedValuesSVM = predDpoySVM
+)
+
+# Print the first few rows of the comparison data frame
+print(comparison_df_svm)
+
+
+```
+
+Graphs for Logistic Regression Model 
+```{r}
+
+# Coefficient Importance Plot
+coef_df <- data.frame(Feature = names(glmDpoy$coefficients[-1]), 
+                      Coefficient = unname(abs(glmDpoy$coefficients[-1])))
+ggplot(coef_df, aes(x = reorder(Feature, Coefficient), y = Coefficient)) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  xlab("Features") + 
+  ylab("Absolute Coefficient Value") + 
+  ggtitle("Feature Importance in DPOY Prediction")
+
+
+
+
+# ROC Curve and AUC
+roc_obj <- roc(seasons_2015to2022_x$winner, glmDpoyPred)
+plot(roc_obj)
+auc(roc_obj)
+
+# Add the ROC curve plot
+ggroc(roc_obj) + 
+  ggtitle("ROC Curve for DPOY Predictive Model") + 
+  xlab("False Positive Rate") + 
+  ylab("True Positive Rate")
+
+
+# Predicted Probability Distribution
+ggplot(seasons_2015to2022_x, aes(x = factor(winner), y = glmDpoyPred, fill = factor(winner))) +
+  geom_violin() +
+  scale_fill_brewer(palette = "Set1", name = "Winner") +
+  labs(title = "Distribution of Predicted Probabilities by Actual DPOY Outcome", x = "Actual DPOY Winner", y = "Predicted Probability") +
+  theme_minimal()
+
+# Coefficient Plot
+coef_data <- as.data.frame(coef(summary(glmDpoy)))
+coef_data$Predictor <- rownames(coef_data)
+coef_data$Coefficient <- abs(coef_data$Estimate) # Taking absolute for visualization
+
+ggplot(coef_data, aes(x = reorder(Predictor, Coefficient), y = Coefficient, fill = Coefficient)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Make the plot horizontal
+  scale_fill_gradient(low = "blue", high = "red") + # Color gradient for visual appeal
+  labs(title = "Effect Sizes of Predictors on DPOY Prediction", x = "Predictors", y = "Effect Size (Absolute Coefficient)") +
+  theme_minimal()
+
+
+# Print the AUC value
+print(paste("AUC:", auc(roc_obj)))
+
+
+```
+
+Graph for SVM Model
+```{r}
+
+# Construct a data frame with the performance metrics
+metrics <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall", "F1 Score"),
+  Value = c(accuracy2, precision, recall, f1)
+)
+
+# Create a bar plot for performance metrics
+ggplot(metrics, aes(x = Metric, y = Value, fill = Metric)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  scale_fill_brewer(palette = "Pastel1") +
+  ylim(0, 1) +  # Assuming your metrics are between 0 and 1
+  labs(y = "Score", title = "Performance Metrics for SVM Model") +
+  theme_minimal()
+
+
+```
+
+Linear Regression Prediction Model for DPOY
+```{r}
+
+# Assuming you have the dataset 'seasons_2015to2022_x' and the outcome variable 'winner'
+
+# Build the linear regression model
+lmDpoy <- lm(winner ~ mp + per + ts_percent + f_tr + drb_percent + stl_percent + blk_percent + dws + dbpm + playoffs, data = seasons_2015to2022_x)
+
+# Summary of the model
+summary(lmDpoy)
+
+# Optionally, you can make predictions with the model
+lmDpoyPred <- predict(lmDpoy, newdata = seasons_2015to2022_x)
+
+# View the head of the predictions
+head(lmDpoyPred)
+
+# Convert predictions to "TRUE" or "FALSE"
+binaryPredictions <- ifelse(lmDpoyPred > 0.5, "TRUE", "FALSE")
+
+# Convert both predictions and actual outcomes to the same type (character or factor)
+binaryPredictions <- as.character(binaryPredictions)
+actualOutcomes <- as.character(seasons_2015to2022_x$winner)
+
+# Calculate accuracy
+accuracy <- mean(binaryPredictions == actualOutcomes)
+
+# Assuming binaryPredictions and actualOutcomes are already computed as per your provided code
+
+# Create the confusion matrix
+confMatrix <- table(Predicted = binaryPredictions, Actual = actualOutcomes)
+
+# Print the confusion matrix
+print(confMatrix)
+
+# Calculate accuracy
+accuracyCalc <- mean(binaryPredictions == actualOutcomes)
+print(accuracyCalc)
+
+
+# Print accuracy
+print(accuracy)
+
+# Assuming binaryPredictions and actualOutcomes are already computed
+
+# Combine predictions and actual outcomes into a new data frame
+comparison_df <- data.frame(
+  ActualOutcomes = actualOutcomes,
+  BinaryPredictions = binaryPredictions
+)
+
+# Print the first few rows of the comparison data frame
+print(comparison_df)
+
+
+```
+
+Graphs for Linear Regression Model
+```{r}
+
+# Residuals Plot
+lmDpoyPred <- predict(lmDpoy, newdata = seasons_2015to2022_x)
+residuals <- seasons_2015to2022_x$winner - lmDpoyPred
+
+ggplot(data = seasons_2015to2022_x, aes(x = lmDpoyPred, y = residuals)) +
+  geom_point(aes(color = residuals), alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  scale_color_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  labs(title = "Residuals vs Predicted Values", x = "Predicted Values", y = "Residuals") +
+  theme_minimal()
+
+# Coefficient Importance Plot
+coef_data <- as.data.frame(coef(summary(lmDpoy)))
+coef_data$Predictor <- rownames(coef_data)
+coef_data$Coefficient <- abs(coef_data$Estimate) # Taking absolute for visualization
+
+ggplot(coef_data, aes(x = reorder(Predictor, Coefficient), y = Coefficient, fill = Coefficient)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Make the plot horizontal
+  scale_fill_gradient(low = "blue", high = "red") + # Color gradient for visual appeal
+  labs(title = "Impact of Variables on Linear Regression Model", x = "Predictors", y = "Effect Size (Absolute Coefficient)") +
+  theme_minimal()
+
+
+```
+
+```{r}
+
+glmDpoyPredTest <- predict(glmDpoy, seasons_2023_x, type = 'response')
+seasons_2023_x$dpoyPredTest <- ifelse(glmDpoyPredTest >= .37725, "TRUE", "FALSE")
+
+
+confMatrixTest <- table(Predicted = seasons_2023_x$dpoyPredTest, Actual = seasons_2023_x$winner)
+print(confMatrixTest)
+
+accuracyTest <- mean(seasons_2023_x$dpoyPredTest == seasons_2023_x$winner)
+print(accuracyTest)
+
+
+
+
+
+
+
+
+predDpoySVMTest <- predict(svmDpoy, seasons_2023_x)
+
+
+
+cmTest <- table(Predicted = predDpoySVMTest, Actual = seasons_2023_x$winner)
+print(cmTest)
+# Assuming cmTest is the confusion matrix from the SVM predictions on the test data
+tpTest <- cmTest[2, 2] # True Positives are typically at position [2, 2] of the matrix
+tnTest <- cmTest[1, 1] # True Negatives are typically at position [1, 1] of the matrix
+totalCasesTest <- sum(cmTest) # Total number of cases
+
+# Calculate accuracy
+accuracySVMTest <- (tpTest + tnTest) / totalCasesTest
+print(accuracySVMTest)
+
+```
+
+
+
